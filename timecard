@@ -12,9 +12,16 @@ class Shift:
         self.start = start
         self.end = None
     def duration(self):
-        return self.end - self.start
+        if self.end is None:
+            return datetime.now() - self.start
+        else:
+            return self.end - self.start
     def __str__(self):
-        return str(self.end) + " – " + str(self.end) + " ; duration " + str(self.duration())
+        if self.end is None:
+            end_str = "(now)"
+        else:
+            end_str = str(self.end)
+        return str(self.start) + " – " + end_str + " ; duration " + str(self.duration())
 
 class Timecard:
     def __init__(self):
