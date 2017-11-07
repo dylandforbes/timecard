@@ -42,7 +42,7 @@ class Timecard:
     def active_shift_start_time(self):
         return self.shifts[-1].start
 
-    def end(self):
+    def stop(self):
         self.shifts[-1].end = datetime.now()
         self.shift_active = False
         return self.shifts[-1]
@@ -77,31 +77,31 @@ def save_and_close_db(db):
 
 if __name__ == '__main__':
     parser = argparse.ArgumentParser(description='Track your work shifts')
-    parser.add_argument('action', type=str, choices=['status', 'start', 'end', 'list', 'total', 'clear'], help='Action to perform')
+    parser.add_argument('action', type=str, choices=['status', 'start', 'stop', 'list', 'total', 'clear'], help='Action to perform')
     args = parser.parse_args()
     # open up db
-    db = open_db()
+    timecard = open_db()
     if args.action == 'status':
-        print(db.get_status())
+        print(timecard.get_status())
     elif args.action == 'start':
-        new_shift = db.start()
+        new_shift = timecard.start()
         print("shift started at " + str(new_shift.start))
-    elif args.action == 'end':
-        if db.shift_active:
-            new_shift = db.end()
+    elif args.action == 'stop':
+        if timecard.shift_active:
+            new_shift = timecard.stop()
             print("shift ended at " + str(new_shift.end) + "; duration " + str(new_shift.duration()))
         else:
             print("error: no shift active")
     elif args.action == 'list':
-        if len(db.shifts) == 0:
+        if len(timecard.shifts) == 0:
             print("no shifts recorded")
         else:
-            for shift in db.shifts:
+            for shift in timecard.shifts:
                 print(shift)
-            print("total: " + str(db.total_time()))
+            print("total: " + str(timecard.total_time()))
     elif args.action == 'total':
-        print("total: " + str(db.total_time()))
+        print("total: " + str(timecard.total_time()))
     elif args.action == 'clear':
-        db.clear()
+        timecard.clear()
         print("all shifts cleared")
-    save_and_close_db(db)
+    save_and_close_db(timecard)
