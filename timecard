@@ -2,15 +2,18 @@
 
 import pickle, os, argparse
 from datetime import datetime, timedelta
+from dateutil.parser import parser as parse_datetime_fuzzy
+from pytimeparse import parse as parse_timedelta_fuzzy
 
 DB_DIRNAME = '/home/dylan/.local/share/timecard'
 DB_BASENAME = 'db.pickle'
 DB_PATH = DB_DIRNAME + '/' + DB_BASENAME
 
 class Shift:
-    def __init__(self, start):
+    def __init__(self, start, end=None, comment=None):
         self.start = start
-        self.end = None
+        self.end = end
+        self.comment = comment
     def duration(self):
         if self.end is None:
             return datetime.now() - self.start
@@ -21,16 +24,42 @@ class Shift:
             end_str = "(now)"
         else:
             end_str = str(self.end)
-        return str(self.start) + " – " + end_str + " ; duration " + str(self.duration())
+        ret = str(self.start) + " - " + end_str + " (duration " + str(self.duration()) + ")"
+        if self.comment is not None:
+            ret += " ;; " + self.comment
+        return ret
 
 class Timecard:
     def __init__(self):
         self.shifts = []
         self.shift_active = False
 
-    def total_time(self):
+    def shift_interval_iterator(self, from_time, to_time):
+        shifts_iterator = self.shifts.__iter__()
+        if from_time is not None:
+            for shift in shifts_iterator:
+                if shift.start >= from_time:
+                    yield shift
+                    break
+        if to_time is not None:
+            for shift in shifts_iterator:
+                if shift.start <= to_time:
+                    break
+                yield shift
+        else:
+            for shift in shifts_iterator:
+                yield shift
+
+    def list(self, from_time=None, to_time=None):
+        if len(self.shifts) == 0:
+            print("no shifts recorded")
+        else:
+            for shift in self.shift_interval_iterator(from_time, to_time):
+                print(shift)
+
+    def total_time(self, from_time, to_time):
         total = timedelta()
-        for shift in self.shifts:
+        for shift in self.shift_interval_iterator(from_time, to_time):
             total += shift.duration()
         return total
 
@@ -42,8 +71,9 @@ class Timecard:
     def active_shift_start_time(self):
         return self.shifts[-1].start
 
-    def stop(self):
+    def stop(self, comment=None):
         self.shifts[-1].end = datetime.now()
+        self.shifts[-1].comment = comment
         self.shift_active = False
         return self.shifts[-1]
 
@@ -52,56 +82,159 @@ class Timecard:
 
     def get_status(self):
         if self.shift_active:
-            return "shift active; started at " + str(self.shifts[-1].start)
+            return "shift active; started at " + str(self.shifts[-1].start) + "; duration: " + str(self.shifts[-1].duration())
         else:
             return "no shift active"
 
-def check_db_file():
-    if not os.path.isdir(DB_DIRNAME):
-        os.makedirs(DB_DIRNAME)
-    if not os.path.isfile(DB_PATH):
-        # create emtpy timecard
-        with open(DB_PATH, 'wb') as f:
-            pickle.dump(Timecard(), f)
-    return open(DB_PATH, 'rb')
+class Interface:
+    def __init__(self):
+        self.set_up_args()
+        self.timecard = self.open_db()
 
-def open_db():
-    with check_db_file() as f:
-        db = pickle.load(f)
-    return db
+    def set_up_args(self):
+        self.parser = argparse.ArgumentParser(description='Track your work shifts')
+        subparsers = self.parser.add_subparsers(dest='subparser_name')
+        parser_status = subparsers.add_parser('status')
+        parser_status.set_defaults(func=self.status)
+        parser_start = subparsers.add_parser('start')
+        parser_start.set_defaults(func=self.start)
+        parser_stop = subparsers.add_parser('stop')
+        parser_stop.add_argument('-c', '--comment', type=str)
+        parser_stop.set_defaults(func=self.stop)
+        parser_cancel = subparsers.add_parser('cancel')
+        parser_cancel.set_defaults(func=self.cancel)
+        parser_list = subparsers.add_parser('list')
+        parser_list.add_argument('--from', type=str, dest='from_time')
+        parser_list.add_argument('--to', type=str, dest='to_time')
+        parser_list.set_defaults(func=self.list)
+        parser_add = subparsers.add_parser('add')
+        parser_add.add_argument('length', type=str, help='length of shift')
+        parser_add.add_argument('-c', '--comment', type=str)
+        parser_add.set_defaults(func=self.add)
+        parser_total = subparsers.add_parser('total')
+        parser_total.set_defaults(func=self.total)
+        parser_total.add_argument('--from', type=str, dest='from_time')
+        parser_total.add_argument('--to', type=str, dest='to_time')
+        parser_total.add_argument('--rate', type=float)
+        parser_clear = subparsers.add_parser('clear')
+        parser_clear.set_defaults(func=self.clear)
 
-def save_and_close_db(db):
-    check_db_file()
-    with open(DB_PATH, 'wb') as db_file:
-        pickle.dump(db, db_file)
+    def check_db_file(self):
+        if not os.path.isdir(DB_DIRNAME):
+            os.makedirs(DB_DIRNAME)
+        if not os.path.isfile(DB_PATH):
+            # create emtpy timecard
+            with open(DB_PATH, 'wb') as f:
+                pickle.dump(Timecard(), f)
+        return open(DB_PATH, 'rb')
 
-if __name__ == '__main__':
-    parser = argparse.ArgumentParser(description='Track your work shifts')
-    parser.add_argument('action', type=str, choices=['status', 'start', 'stop', 'list', 'total', 'clear'], help='Action to perform')
-    args = parser.parse_args()
-    # open up db
-    timecard = open_db()
-    if args.action == 'status':
-        print(timecard.get_status())
-    elif args.action == 'start':
-        new_shift = timecard.start()
+    def open_db(self):
+        with self.check_db_file() as f:
+            db = pickle.load(f)
+        return db
+
+    def save_and_close_db(self):
+        self.check_db_file()
+        with open(DB_PATH, 'wb') as db_file:
+            pickle.dump(self.timecard, db_file)
+
+    def parse_datetime(self, datestring):
+        try:
+            datetime_obj = parse_datetime_fuzzy(datestring)
+        except ValueError as e:
+            print("error: malformed datetime string (%s)" % e.__str__())
+            exit(1)
+        return datetime_obj
+
+    def parse_timedelta(self, string):
+        seconds = parse_timedelta_fuzzy(string)
+        return timedelta(seconds=seconds)
+
+    def get_interval(self, args):
+        interval_str = ""
+        if args.from_time is not None:
+            from_time = self.parse_datetime(args.from_time)
+            interval_str += "from %s " % str(from_time)
+        else:
+            from_time = None
+            interval_str += "from forever ago "
+        if args.to_time is not None:
+            to_time = self.parse_datetime(args.to_time)
+            interval_str += "to %s:" % str(to_time)
+        else:
+            to_time = None
+            interval_str += "to now:"
+        return (from_time, to_time, interval_str)
+
+    # the functions
+    def status(self, args):
+        print(self.timecard.get_status())
+
+    def start(self, args):
+        new_shift = self.timecard.start()
         print("shift started at " + str(new_shift.start))
-    elif args.action == 'stop':
-        if timecard.shift_active:
-            new_shift = timecard.stop()
+
+    def stop(self, args):
+        if self.timecard.shift_active:
+            new_shift = self.timecard.stop()
             print("shift ended at " + str(new_shift.end) + "; duration " + str(new_shift.duration()))
         else:
             print("error: no shift active")
-    elif args.action == 'list':
-        if len(timecard.shifts) == 0:
-            print("no shifts recorded")
+
+    def cancel(self, args):
+        if self.timecard.shift_active:
+            del self.timecard.shifts[-1]
+            self.timecard.shift_active = False
+            print("active shift canceled")
         else:
-            for shift in timecard.shifts:
-                print(shift)
-            print("total: " + str(timecard.total_time()))
-    elif args.action == 'total':
-        print("total: " + str(timecard.total_time()))
-    elif args.action == 'clear':
-        timecard.clear()
+            print("error: no shift active")
+
+    def add(self, args):
+        if self.timecard.shift_active:
+            print("error: cannot add shift while shift active")
+            return
+        duration = self.parse_timedelta(args.length)
+        now = datetime.now()
+        start = now - duration
+        new_shift = Shift(start, end=now, comment=args.comment)
+        new_shift.comment = args.comment
+        self.timecard.shifts.append(new_shift)
+        print("added shift: " + str(new_shift))
+
+    def list(self, args):
+        from_time, to_time, interval_str = self.get_interval(args)
+        print("shifts ", end='')
+        print(interval_str)
+        print("=======")
+        self.timecard.list(from_time, to_time)
+        print("=======")
+        # also display total just cuz
+        print("total: " + str(self.timecard.total_time(from_time, to_time)))
+
+    def total(self, args):
+        from_time, to_time, interval_str = self.get_interval(args)
+        total_time = self.timecard.total_time(from_time, to_time)
+        print("total time ", end='')
+        print(interval_str)
+        print(total_time)
+        if args.rate is not None:
+            earnings = args.rate * total_time.total_seconds() / 60 / 60
+            print("earnings at $%.2f/hour: $%.2f" % (args.rate, earnings))
+
+    def clear(self, args):
+        self.timecard.clear()
         print("all shifts cleared")
-    save_and_close_db(timecard)
+
+    def run(self):
+        args = self.parser.parse_args()
+        if args.subparser_name:
+            args.func(args)
+        else:
+            self.parser.print_help()
+        # close db
+        self.save_and_close_db()
+
+
+if __name__ == '__main__':
+    interface = Interface()
+    interface.run()
